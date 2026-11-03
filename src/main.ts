@@ -13,6 +13,12 @@ const PITCH_RATE = THREE.MathUtils.degToRad(20); // 左の丸 上下: 度/秒
 const FINE_MAX = THREE.MathUtils.degToRad(6); // 右の丸の微調整の最大
 const MAX_PULL = 0.4; // 弦を引く最大 (m)
 const PREVIEW_RATIO = 0.4; // 軌道の点線を見せる割合
+const FOLLOW_BACK = 2.2; // 矢を追うカメラ: 矢の何m後ろ
+const FOLLOW_UP = 0.35; // 矢より何m上
+const FOLLOW_AHEAD = 6; // 矢の何m先を見る
+const LAND_BACK = 3.5; // 刺さった矢を見るカメラ: 矢の何m後ろ
+const FLIGHT_TIME_SCALE = 0.6; // 矢が飛んでいる間のスロー（1 で通常の速さ）
+const SETTLE_TIME = 1.8; // 刺さってから次を構えられるまで（秒）
 const TARGET = { distance: 30, offsetX: 10, height: 1.6 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -102,6 +108,8 @@ function shoot(power: number) {
   obj.position.copy(pos);
   scene.add(obj);
   flying = { obj, pos, vel: dir.multiplyScalar(speedFor(power)), age: 0 };
+  launchCam.pos.copy(camera.position);
+  launchCam.look.copy(lookNow);
   arrowsLeft--;
   nockedArrow.visible = false;
   buzz(15);
@@ -165,9 +173,12 @@ function orientArrow(f: Flying) {
 function land(score: number, onTarget: boolean) {
   if (!flying) return;
   orientArrow(flying);
+  const d = flying.vel.clone().normalize();
+  if (!onTarget) d.y = Math.max(d.y, -0.3); // 地面に刺さった時はカメラが潜らないように
+  lastLanding = { pos: flying.pos.clone(), dir: d.normalize() };
   stuck.push(flying.obj);
   flying = null;
-  settleTimer = 1.1;
+  settleTimer = SETTLE_TIME;
   total += score;
   hits.push(score);
   if (onTarget && score > 0) {
@@ -208,6 +219,9 @@ function updatePreview() {
 // ---- 毎フレーム ----
 const lookNow = world.cameraHome.look.clone();
 const lookGoal = new THREE.Vector3();
+const camGoal = new THREE.Vector3();
+const launchCam = { pos: new THREE.Vector3(), look: new THREE.Vector3() };
+let lastLanding: { pos: THREE.Vector3; dir: THREE.Vector3 } | null = null;
 let last = performance.now();
 let fps = 60;
 
@@ -246,7 +260,7 @@ function frame(now: number) {
   nockedArrow.position.z = restZ + pull;
   if (!flying && settleTimer <= 0 && arrowsLeft > 0) nockedArrow.visible = true;
 
-  stepArrow(dt);
+  stepArrow(dt * FLIGHT_TIME_SCALE);
   updatePreview();
 
   if (settleTimer > 0) {
@@ -254,11 +268,30 @@ function frame(now: number) {
     if (settleTimer <= 0 && arrowsLeft === 0) showResult();
   }
 
-  // カメラ: 矢を少し追う
-  if (flying) lookGoal.copy(world.cameraHome.look).lerp(flying.pos, 0.35);
-  else if (settleTimer > 0.4 && stuck.length) lookGoal.copy(world.cameraHome.look).lerp(stuck[stuck.length - 1].position, 0.35);
-  else lookGoal.copy(world.cameraHome.look);
-  lookNow.lerp(lookGoal, 1 - Math.exp(-dt * 4));
+  // カメラ: 飛んでいる間は矢の後ろから追う。刺さったら少し見せてから元の位置へ戻る
+  let rate = 4;
+  if (flying) {
+    // 放った瞬間の位置から 0.25 秒で矢の真後ろへ寄り、その後はぴったり付いていく
+    const dir = tmpA.copy(flying.vel).normalize();
+    camGoal.copy(flying.pos).addScaledVector(dir, -FOLLOW_BACK).y += FOLLOW_UP;
+    lookGoal.copy(flying.pos).addScaledVector(dir, FOLLOW_AHEAD);
+    const t = THREE.MathUtils.smoothstep(flying.age, 0, 0.25 * FLIGHT_TIME_SCALE);
+    camera.position.lerpVectors(launchCam.pos, camGoal, t);
+    lookNow.lerpVectors(launchCam.look, lookGoal, t);
+    rate = 0;
+  } else if (settleTimer > 0.5 && lastLanding) {
+    camGoal.copy(lastLanding.pos).addScaledVector(lastLanding.dir, -LAND_BACK).y += FOLLOW_UP;
+    lookGoal.copy(lastLanding.pos);
+    rate = 14;
+  } else {
+    camGoal.copy(world.cameraHome.pos);
+    lookGoal.copy(world.cameraHome.look);
+  }
+  if (rate > 0) {
+    const k = 1 - Math.exp(-dt * rate);
+    camera.position.lerp(camGoal, k);
+    lookNow.lerp(lookGoal, k);
+  }
   camera.lookAt(lookNow);
 
   renderer.render(scene, camera);
