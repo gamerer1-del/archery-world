@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>アーチェリーワールド</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;800&display=swap">
+<style>
+  /* 横持ち全画面ゲーム。3Dの上に HUD と 2つの丸を重ねる。単一の見た目（屋外の昼）に固定 */
+  :root {
+    --sky: #9cc7e4;
+    --ink: #13212b;
+    --paper: rgba(250, 247, 238, 0.92);
+    --gold: #f2c230;
+    --red: #d8432f;
+    --stick: rgba(255, 255, 255, 0.22);
+    --stick-edge: rgba(255, 255, 255, 0.7);
+    --font: "M PLUS Rounded 1c", "Hiragino Maru Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
+    color-scheme: light;
+  }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--sky); color: var(--ink); font-family: var(--font); }
+  body { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  [hidden] { display: none !important; }
+  #game { position: fixed; inset: 0; }
+  #game canvas { display: block; width: 100%; height: 100%; }
+
+  .hud { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); left: max(16px, env(safe-area-inset-left, 0px)); display: flex; gap: 8px; flex-wrap: wrap; pointer-events: none; }
+  .chip { background: var(--paper); border-radius: 999px; padding: 4px 12px; font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; box-shadow: 0 2px 0 rgba(0,0,0,.15); }
+  .chip small { font-weight: 500; font-size: 11px; margin-right: 4px; opacity: .7; }
+  #arrows-left { letter-spacing: 1px; }
+  .tools { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); right: max(16px, env(safe-area-inset-right, 0px)); display: flex; gap: 6px; }
+  .tools button { font: 800 12px var(--font); color: var(--ink); background: var(--paper); border: 0; border-radius: 999px; padding: 6px 10px; box-shadow: 0 2px 0 rgba(0,0,0,.15); }
+  .tools button:focus-visible { outline: 2px solid var(--ink); }
+  #debug { position: fixed; left: max(16px, env(safe-area-inset-left, 0px)); top: calc(env(safe-area-inset-top, 0px) + 44px); font: 500 11px ui-monospace, Menlo, monospace; color: var(--ink); background: rgba(255,255,255,.6); padding: 3px 6px; border-radius: 6px; pointer-events: none; white-space: pre; }
+
+  .stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; background: var(--stick); border: 2px solid var(--stick-edge); pointer-events: none; transition: opacity .15s; }
+  .stick .knob { position: absolute; left: 50%; top: 50%; width: 50px; height: 50px; margin: -25px 0 0 -25px; border-radius: 50%; background: rgba(255,255,255,.85); box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+  .stick .label { position: absolute; left: 0; right: 0; bottom: -20px; text-align: center; font-size: 11px; font-weight: 800; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.5); }
+  .stick.active { background: rgba(255,255,255,.32); }
+  #stick-right .knob { background: #ffe9b0; }
+
+  #popup { position: fixed; left: 50%; top: 34%; transform: translate(-50%, -50%) scale(.6); font-size: 44px; font-weight: 800; color: #fff; -webkit-text-stroke: 2px var(--ink); paint-order: stroke; opacity: 0; transition: opacity .2s, transform .25s; pointer-events: none; white-space: nowrap; }
+  #popup.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #popup.gold { color: var(--gold); }
+
+  .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(19, 33, 43, .55); z-index: 5; }
+  .card { background: var(--paper); border-radius: 18px; padding: 20px 28px; text-align: center; min-width: 220px; max-width: 80vw; }
+  .card h2 { margin: 0 0 6px; font-size: 20px; }
+  .card .big { font-size: 48px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .card p { margin: 6px 0 14px; font-size: 13px; }
+  .card button { font: 800 16px var(--font); background: var(--red); color: #fff; border: 0; border-radius: 999px; padding: 10px 26px; }
+  #rotate { z-index: 10; color: #fff; font-weight: 800; font-size: 18px; text-align: center; }
+  @media (orientation: landscape) { #rotate { display: none; } }
+  @media (prefers-reduced-motion: reduce) { #popup { transition: none; } }
+</style>
+</head>
+<body>
+<div id="game"></div>
+
+<div class="hud">
+  <div class="chip"><small>矢</small><span id="arrows-left">●●●●●</span></div>
+  <div class="chip"><small>合計</small><span id="total">0</span></div>
+  <div class="chip"><small>風</small><span id="wind">-</span></div>
+  <div class="chip"><small>距離</small><span id="dist">-</span></div>
+</div>
+<div class="tools">
+  <button id="btn-mode" type="button">丸: 固定</button>
+  <button id="btn-debug" type="button">数値</button>
+</div>
+<div id="debug" hidden></div>
+
+<div class="stick" id="stick-left"><div class="knob"></div><div class="label">向き</div></div>
+<div class="stick" id="stick-right"><div class="knob"></div><div class="label">弦を引く</div></div>
+
+<div id="popup"></div>
+
+<div class="overlay" id="start">
+  <div class="card">
+    <h2>アーチェリーワールド</h2>
+    <p>左の丸で向きと角度、右の丸を引いて離すと<br>引いた反対方向へ矢が飛びます。5本で合計点を競います。</p>
+    <button id="btn-start" type="button">はじめる</button>
+  </div>
+</div>
+<div class="overlay" id="result" hidden>
+  <div class="card">
+    <h2>けっか</h2>
+    <div class="big"><span id="result-score">0</span><small style="font-size:18px"> 点</small></div>
+    <p id="result-detail"></p>
+    <button id="btn-retry" type="button">もう一度</button>
+  </div>
+</div>
+<div class="overlay" id="rotate">スマホを横向きにしてください</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
